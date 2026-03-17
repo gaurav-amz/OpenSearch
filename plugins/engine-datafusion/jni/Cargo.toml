@@ -61,9 +61,6 @@ num_cpus = "1.16"
 object_store = { workspace = true }
 url = { workspace = true }
 
-# Liquid Cache for byte-level caching
-liquid-cache-datafusion-local = { workspace = true }
-
 # Substrait support
 substrait = { workspace = true }
 
@@ -81,6 +78,7 @@ tokio-stream = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 mimalloc = { version = "0.1.48", default-features = false }
+libmimalloc-sys = { version = "0.1.42", features = ["extended"] }
 
 [build-dependencies]
 cbindgen = "0.27"
