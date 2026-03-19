@@ -12,7 +12,7 @@ import org.opensearch.datafusion.jni.NativeBridge;
 import org.opensearch.rest.BaseRestHandler;
 import org.opensearch.rest.BytesRestResponse;
 import org.opensearch.rest.RestRequest;
-import org.opensearch.rest.RestStatus;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.transport.client.node.NodeClient;
 
 import java.util.List;
