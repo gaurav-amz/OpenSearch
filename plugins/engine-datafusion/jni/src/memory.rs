@@ -55,8 +55,101 @@ impl Monitor {
         self.value.fetch_sub(amount, Ordering::Relaxed);
     }
 
-    fn get_current_val(&self) -> usize {
+    pub(crate) fn get_current_val(&self) -> usize {
         self.value.load(Ordering::Relaxed)
+    }
+}
+
+/// A MemoryPool that supports changing its limit at runtime.
+///
+/// Unlike DataFusion's GreedyMemoryPool (which stores pool_size as a plain usize
+/// set once in the constructor with no setter), DynamicLimitPool uses an AtomicUsize
+/// for the limit, allowing it to be changed at any time via the shared limit handle.
+///
+/// Behavior:
+/// - Increasing the limit takes effect immediately for new allocations.
+/// - Decreasing the limit takes effect for new allocations only.
+///   Existing reservations that exceed the new limit are NOT reclaimed.
+///   They remain until the consumer frees them (e.g., query completes).
+#[derive(Debug)]
+pub struct DynamicLimitPool {
+    /// Current memory usage, tracked atomically.
+    used: AtomicUsize,
+    /// The dynamic limit that can be changed at runtime.
+    /// Shared via Arc so the limit can be changed externally.
+    dynamic_limit: Arc<AtomicUsize>,
+}
+
+/// Handle to change the pool limit at runtime.
+/// Can be stored separately from the pool itself.
+#[derive(Debug, Clone)]
+pub struct DynamicLimitHandle {
+    limit: Arc<AtomicUsize>,
+}
+
+impl DynamicLimitHandle {
+    /// Change the pool limit at runtime.
+    pub fn set_limit(&self, new_limit: usize) {
+        self.limit.store(new_limit, Ordering::SeqCst);
+    }
+
+    /// Get the current limit.
+    pub fn limit(&self) -> usize {
+        self.limit.load(Ordering::SeqCst)
+    }
+}
+
+impl DynamicLimitPool {
+    /// Create a new pool with the given initial limit.
+    /// Returns the pool and a handle to change the limit.
+    pub fn new(initial_limit: usize) -> (Self, DynamicLimitHandle) {
+        let limit = Arc::new(AtomicUsize::new(initial_limit));
+        let handle = DynamicLimitHandle { limit: limit.clone() };
+        let pool = Self {
+            used: AtomicUsize::new(0),
+            dynamic_limit: limit,
+        };
+        (pool, handle)
+    }
+
+    /// Get the current limit.
+    pub fn limit(&self) -> usize {
+        self.dynamic_limit.load(Ordering::SeqCst)
+    }
+}
+
+impl MemoryPool for DynamicLimitPool {
+    fn grow(&self, _reservation: &MemoryReservation, additional: usize) {
+        self.used.fetch_add(additional, Ordering::Relaxed);
+    }
+
+    fn shrink(&self, _reservation: &MemoryReservation, shrink: usize) {
+        self.used.fetch_sub(shrink, Ordering::Relaxed);
+    }
+
+    fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> Result<()> {
+        let limit = self.dynamic_limit.load(Ordering::SeqCst);
+        self.used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                let new_used = used + additional;
+                (new_used <= limit).then_some(new_used)
+            })
+            .map_err(|used| {
+                DataFusionError::ResourcesExhausted(format!(
+                    "Failed to allocate additional {} for {} with {} already allocated \
+                     for this reservation - {} remain available for the total pool (dynamic limit: {})",
+                    additional,
+                    reservation.consumer().name(),
+                    reservation.size(),
+                    limit.saturating_sub(used),
+                    limit,
+                ))
+            })?;
+        Ok(())
+    }
+
+    fn reserved(&self) -> usize {
+        self.used.load(Ordering::Relaxed)
     }
 }
 
