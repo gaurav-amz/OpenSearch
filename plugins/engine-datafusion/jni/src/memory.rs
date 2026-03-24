@@ -9,6 +9,8 @@ use std::result;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use datafusion::common::DataFusionError;
 
 pub type Result<T, E = DataFusionError> = result::Result<T, E>;
@@ -78,6 +80,11 @@ pub struct DynamicLimitPool {
     /// The dynamic limit that can be changed at runtime.
     /// Shared via Arc so the limit can be changed externally.
     dynamic_limit: Arc<AtomicUsize>,
+    /// Debug: delay in milliseconds to inject into each try_grow call.
+    /// When non-zero, every try_grow sleeps for this duration BEFORE checking the limit.
+    /// This artificially slows down query execution so you can change the limit mid-query.
+    /// Set to 0 (default) for production use.
+    debug_delay_ms: Arc<AtomicUsize>,
 }
 
 /// Handle to change the pool limit at runtime.
@@ -85,6 +92,7 @@ pub struct DynamicLimitPool {
 #[derive(Debug, Clone)]
 pub struct DynamicLimitHandle {
     limit: Arc<AtomicUsize>,
+    debug_delay_ms: Arc<AtomicUsize>,
 }
 
 impl DynamicLimitHandle {
@@ -97,6 +105,18 @@ impl DynamicLimitHandle {
     pub fn limit(&self) -> usize {
         self.limit.load(Ordering::SeqCst)
     }
+
+    /// Set debug delay in milliseconds for try_grow calls.
+    /// When non-zero, every try_grow sleeps for this duration before checking the limit.
+    /// Use this to slow down queries so you can change the limit mid-execution.
+    pub fn set_debug_delay_ms(&self, ms: usize) {
+        self.debug_delay_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Get the current debug delay in milliseconds.
+    pub fn debug_delay_ms(&self) -> usize {
+        self.debug_delay_ms.load(Ordering::SeqCst)
+    }
 }
 
 impl DynamicLimitPool {
@@ -104,10 +124,15 @@ impl DynamicLimitPool {
     /// Returns the pool and a handle to change the limit.
     pub fn new(initial_limit: usize) -> (Self, DynamicLimitHandle) {
         let limit = Arc::new(AtomicUsize::new(initial_limit));
-        let handle = DynamicLimitHandle { limit: limit.clone() };
+        let delay = Arc::new(AtomicUsize::new(0));
+        let handle = DynamicLimitHandle {
+            limit: limit.clone(),
+            debug_delay_ms: delay.clone(),
+        };
         let pool = Self {
             used: AtomicUsize::new(0),
             dynamic_limit: limit,
+            debug_delay_ms: delay,
         };
         (pool, handle)
     }
@@ -128,6 +153,12 @@ impl MemoryPool for DynamicLimitPool {
     }
 
     fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> Result<()> {
+        // Debug: sleep before checking limit to slow down query execution
+        let delay_ms = self.debug_delay_ms.load(Ordering::Relaxed);
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms as u64));
+        }
+
         let limit = self.dynamic_limit.load(Ordering::SeqCst);
         self.used
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {

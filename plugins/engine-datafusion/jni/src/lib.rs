@@ -380,6 +380,38 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_setMemory
     );
 }
 
+/// Get the current debug delay in milliseconds for try_grow calls.
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_getMemoryPoolDebugDelayMs(
+    _env: JNIEnv,
+    _class: JClass,
+    runtime_ptr: jlong,
+) -> jlong {
+    if runtime_ptr == 0 {
+        return 0;
+    }
+    let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+    runtime.pool_handle.debug_delay_ms() as jlong
+}
+
+/// Set a debug delay in milliseconds for every try_grow call.
+/// This slows down query execution so you can change the limit mid-query.
+/// Set to 0 to disable (production default).
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_setMemoryPoolDebugDelayMs(
+    _env: JNIEnv,
+    _class: JClass,
+    runtime_ptr: jlong,
+    delay_ms: jlong,
+) {
+    if runtime_ptr == 0 {
+        return;
+    }
+    let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+    runtime.pool_handle.set_debug_delay_ms(delay_ms as usize);
+    log_info!("Memory pool debug delay set to {} ms per try_grow call", delay_ms);
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createSessionContext(
     _env: JNIEnv,

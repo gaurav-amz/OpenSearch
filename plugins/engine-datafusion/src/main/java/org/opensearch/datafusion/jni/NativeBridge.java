@@ -81,6 +81,11 @@ public final class NativeBridge {
     /** Set memory pool limit at runtime. Takes effect for new allocations only. */
     public static native void setMemoryPoolLimit(long runtimePtr, long newLimitBytes);
 
+    /** Get current debug delay in milliseconds for try_grow calls. */
+    public static native long getMemoryPoolDebugDelayMs(long runtimePtr);
+    /** Set debug delay in milliseconds for every try_grow call. Slows down queries for testing. Set to 0 to disable. */
+    public static native void setMemoryPoolDebugDelayMs(long runtimePtr, long delayMs);
+
 
     // Logger initialization
     public static native void initLogger();
