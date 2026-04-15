@@ -19,6 +19,8 @@ import org.opensearch.datafusion.jni.NativeBridge;
 import org.opensearch.datafusion.jni.handle.GlobalRuntimeHandle;
 import org.opensearch.datafusion.search.cache.CacheManager;
 import org.opensearch.datafusion.search.cache.CacheUtils;
+import org.opensearch.monitor.jvm.JvmInfo;
+import org.opensearch.monitor.os.OsProbe;
 
 /**
  * DataFusion runtime environment manager.
@@ -33,24 +35,39 @@ public final class DataFusionRuntimeEnv implements AutoCloseable {
     private CacheManager cacheManager;
 
     /**
+     * Returns the estimated available native memory (total physical - JVM heap).
+     * Used to compute percentage-based defaults for native memory settings.
+     * Returns the value as a whole-byte string to avoid fractional byte size parsing errors.
+     */
+    static long getAvailableNativeMemory() {
+        long totalPhysical = OsProbe.getInstance().getTotalPhysicalMemorySize();
+        long jvmHeap = JvmInfo.jvmInfo().getConfiguredMaxHeapSize();
+        return Math.max(totalPhysical - jvmHeap, 0);
+    }
+
+    /**
      * Controls the memory used for the datafusion query execution.
+     * Default: 10% of available native memory (total physical - JVM heap).
+     * Accepts absolute values ("10gb").
      * Dynamic: can be changed at runtime via cluster settings API.
-     * The Rust DynamicLimitPool reads the new limit atomically on every try_grow() call.
      */
     public static final Setting<ByteSizeValue> DATAFUSION_MEMORY_POOL_CONFIGURATION = Setting.byteSizeSetting(
         "datafusion.search.memory_pool",
-        new ByteSizeValue(10, ByteSizeUnit.GB),
+        settings -> (long) (getAvailableNativeMemory() * 0.10) + ByteSizeUnit.BYTES.getSuffix(),
         Setting.Property.Dynamic,
         Setting.Property.NodeScope
     );
 
     /**
-     * Controls the spill memory used for the datafusion query execution
+     * Controls the spill disk space used for the datafusion query execution.
+     * Default: 20% of available native memory (total physical - JVM heap).
+     * Dynamic: can be changed at runtime via cluster settings API.
+     * Note: DiskManager runtime enforcement is future work.
      */
     public static final Setting<ByteSizeValue> DATAFUSION_SPILL_MEMORY_LIMIT_CONFIGURATION = Setting.byteSizeSetting(
         "datafusion.spill.memory_limit",
-        new ByteSizeValue(20, ByteSizeUnit.GB),
-        Setting.Property.Final,
+        settings -> (long) (getAvailableNativeMemory() * 0.20) + ByteSizeUnit.BYTES.getSuffix(),
+        Setting.Property.Dynamic,
         Setting.Property.NodeScope
     );
 
@@ -76,6 +93,19 @@ public final class DataFusionRuntimeEnv implements AutoCloseable {
                     NativeBridge.setMemoryPoolLimit(runtimePtr, newLimitBytes);
                     logger.info("DataFusion memory pool limit updated to {} bytes via cluster settings", newLimitBytes);
                 }
+            }
+        );
+
+        // Register dynamic settings listener for spill limit changes
+        // Note: DiskManager doesn't support runtime limit changes yet.
+        // This listener logs the change for observability. Full runtime enforcement
+        // requires a DiskManager handle (future work).
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(
+            DATAFUSION_SPILL_MEMORY_LIMIT_CONFIGURATION,
+            newValue -> {
+                long newLimitBytes = newValue.getBytes();
+                logger.info("DataFusion spill limit setting updated to {} bytes. "
+                    + "Note: DiskManager limit change requires restart to take full effect.", newLimitBytes);
             }
         );
     }

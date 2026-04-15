@@ -23,14 +23,20 @@ public class ArrowBufferPool implements Closeable {
     private static final Logger logger = LogManager.getLogger(ArrowBufferPool.class);
 
     private final RootAllocator rootAllocator;
-    private final long maxChildAllocation;
+    private volatile long maxChildAllocation;
+    private final long rootAllocatorLimit;
 
     public ArrowBufferPool(Settings settings) {
-        long maxAllocationInBytes = 10L * 1024 * 1024 * 1024;
+        // Root allocator: use the setting value (which defaults to 10% of native memory)
+        long maxAllocationInBytes = ParquetSettings.ARROW_POOL_BYTES.get(settings).getBytes();
+        this.rootAllocatorLimit = maxAllocationInBytes;
 
-        logger.info("Max native memory allocation for ArrowBufferPool: {} bytes", maxAllocationInBytes);
+        // Child allocator: use setting value
+        this.maxChildAllocation = ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES.get(settings).getBytes();
+
+        logger.info("ArrowBufferPool root allocator limit: {} bytes, child allocator limit: {} bytes",
+            maxAllocationInBytes, maxChildAllocation);
         this.rootAllocator = new RootAllocator(maxAllocationInBytes);
-        this.maxChildAllocation = 1024 * 1024 * 1024;
     }
 
     /**
@@ -56,6 +62,36 @@ public class ArrowBufferPool implements Closeable {
 
     public long getTotalAllocatedBytes() {
         return rootAllocator.getAllocatedMemory();
+    }
+
+    /**
+     * Updates the child allocator limit for new allocators.
+     * Existing child allocators keep their old limit.
+     * Validates that the new limit doesn't exceed root allocator / 2.
+     */
+    public void updateMaxChildAllocation(long newMaxChildAllocation) {
+        long maxAllowed = rootAllocatorLimit / 2;
+        if (newMaxChildAllocation > maxAllowed) {
+            logger.warn("Requested child allocator limit {} exceeds max allowed {} (root/2). Capping to max.",
+                newMaxChildAllocation, maxAllowed);
+            newMaxChildAllocation = maxAllowed;
+        }
+        this.maxChildAllocation = newMaxChildAllocation;
+        logger.info("Arrow child allocator limit updated to {} bytes", this.maxChildAllocation);
+    }
+
+    /**
+     * Returns the current child allocator limit.
+     */
+    public long getMaxChildAllocation() {
+        return maxChildAllocation;
+    }
+
+    /**
+     * Returns the root allocator limit (immutable after construction).
+     */
+    public long getRootAllocatorLimit() {
+        return rootAllocatorLimit;
     }
 
     /**

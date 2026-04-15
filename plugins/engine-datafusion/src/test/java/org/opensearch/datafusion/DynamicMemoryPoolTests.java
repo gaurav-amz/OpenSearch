@@ -81,8 +81,7 @@ public class DynamicMemoryPoolTests extends OpenSearchTestCase {
         assertTrue("Runtime pointer should be non-zero", runtimePtr != 0);
 
         long limit = NativeBridge.getMemoryPoolLimit(runtimePtr);
-        long expectedDefault = 10L * 1024 * 1024 * 1024; // 10 GB default
-        assertEquals("Initial pool limit should be 10 GB", expectedDefault, limit);
+        assertTrue("Initial pool limit should be positive (10% of native memory)", limit > 0);
     }
 
     /**
@@ -143,9 +142,9 @@ public class DynamicMemoryPoolTests extends OpenSearchTestCase {
     public void testSettingsListenerUpdatesPoolLimit() {
         long runtimePtr = service.getRuntimePointer();
 
-        // Initial limit should be 10 GB
+        // Record initial limit (percentage-based, varies by machine)
         long initialLimit = NativeBridge.getMemoryPoolLimit(runtimePtr);
-        assertEquals(10L * 1024 * 1024 * 1024, initialLimit);
+        assertTrue("Initial limit should be positive", initialLimit > 0);
 
         // Simulate a cluster settings update by applying new settings through ClusterSettings
         Settings newSettings = Settings.builder()

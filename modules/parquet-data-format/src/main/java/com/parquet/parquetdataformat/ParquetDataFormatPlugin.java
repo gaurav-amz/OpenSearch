@@ -165,7 +165,10 @@ public class ParquetDataFormatPlugin extends Plugin implements DataSourcePlugin 
             ParquetSettings.PAGE_ROW_LIMIT,
             ParquetSettings.DICT_SIZE_BYTES,
             ParquetSettings.COMPRESSION_TYPE,
-            ParquetSettings.COMPRESSION_LEVEL
+            ParquetSettings.COMPRESSION_LEVEL,
+            ParquetSettings.ARROW_POOL_BYTES,
+            ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES,
+            ParquetSettings.MAX_ROWS_PER_VSR
         );
     }
 

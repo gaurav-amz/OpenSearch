@@ -31,7 +31,7 @@ public class VSRPool implements AutoCloseable {
     private final AtomicInteger vsrCounter;
 
     // Configuration
-    private final int maxRowsPerVSR;
+    private volatile int maxRowsPerVSR;
 
     public VSRPool(String poolId, Schema schema, ArrowBufferPool arrowBufferPool) {
         this.poolId = poolId;
@@ -41,8 +41,8 @@ public class VSRPool implements AutoCloseable {
         this.frozenVSR = new AtomicReference<>();
         this.vsrCounter = new AtomicInteger(0);
 
-        // Configuration - could be made configurable
-        this.maxRowsPerVSR = 50000; // Max rows before forcing freeze
+        // Default value; can be overridden via updateMaxRowsPerVSR()
+        this.maxRowsPerVSR = 50000;
 
         // Initialize with first active VSR
         initializeActiveVSR();
@@ -289,5 +289,22 @@ public class VSRPool implements AutoCloseable {
 
     private boolean shouldRotateVSR(ManagedVSR vsr) {
         return vsr.getRowCount() >= maxRowsPerVSR;
+    }
+
+    /**
+     * Updates the max rows per VSR threshold.
+     * Takes effect on the next shouldRotateVSR() check (every addDoc call).
+     * Existing active VSRs are not affected until they rotate.
+     */
+    public void updateMaxRowsPerVSR(int newMaxRows) {
+        this.maxRowsPerVSR = newMaxRows;
+        logger.debug("VSR max rows updated to {} for pool {}", newMaxRows, poolId);
+    }
+
+    /**
+     * Returns the current max rows per VSR threshold.
+     */
+    public int getMaxRowsPerVSR() {
+        return maxRowsPerVSR;
     }
 }

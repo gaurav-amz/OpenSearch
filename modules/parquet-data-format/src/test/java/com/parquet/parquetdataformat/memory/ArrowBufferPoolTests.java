@@ -234,4 +234,74 @@ public class ArrowBufferPoolTests extends OpenSearchTestCase {
 
             childAllocator.close();
     }
+
+    // --- New tests for configurable settings ---
+
+    public void testExplicitArrowPoolBytesSetting() {
+        Settings settings = Settings.builder()
+            .put("parquet.write.arrow_pool_bytes", "5gb")
+            .build();
+
+        try (ArrowBufferPool pool = new ArrowBufferPool(settings)) {
+            assertEquals("Root allocator limit should be 5 GB",
+                5L * 1024 * 1024 * 1024, pool.getRootAllocatorLimit());
+        }
+    }
+
+    public void testChildAllocatorSetting() {
+        Settings settings = Settings.builder()
+            .put("parquet.write.arrow_pool_bytes", "10gb")
+            .put("parquet.write.arrow_child_allocator_bytes", "2gb")
+            .build();
+
+        try (ArrowBufferPool pool = new ArrowBufferPool(settings)) {
+            assertEquals("Child allocator limit should be 2 GB",
+                2L * 1024 * 1024 * 1024, pool.getMaxChildAllocation());
+        }
+    }
+
+    public void testChildAllocatorCreatedWithConfiguredLimit() {
+        Settings settings = Settings.builder()
+            .put("parquet.write.arrow_pool_bytes", "10gb")
+            .put("parquet.write.arrow_child_allocator_bytes", "512mb")
+            .build();
+
+        try (ArrowBufferPool pool = new ArrowBufferPool(settings)) {
+            BufferAllocator child = pool.createChildAllocator("test-child");
+            assertNotNull("Child allocator should be created", child);
+            child.close();
+        }
+    }
+
+    public void testUpdateMaxChildAllocationCapsAtHalfRoot() {
+        Settings settings = Settings.builder()
+            .put("parquet.write.arrow_pool_bytes", "10gb")
+            .build();
+
+        try (ArrowBufferPool pool = new ArrowBufferPool(settings)) {
+            pool.updateMaxChildAllocation(8L * 1024 * 1024 * 1024);
+            assertEquals("Child allocator should be capped at root/2 (5 GB)",
+                5L * 1024 * 1024 * 1024, pool.getMaxChildAllocation());
+        }
+    }
+
+    public void testUpdateMaxChildAllocationAcceptsValidValue() {
+        Settings settings = Settings.builder()
+            .put("parquet.write.arrow_pool_bytes", "10gb")
+            .build();
+
+        try (ArrowBufferPool pool = new ArrowBufferPool(settings)) {
+            pool.updateMaxChildAllocation(2L * 1024 * 1024 * 1024);
+            assertEquals("Child allocator should be updated to 2 GB",
+                2L * 1024 * 1024 * 1024, pool.getMaxChildAllocation());
+        }
+    }
+
+    public void testDefaultSettingsProducePositiveValues() {
+        try (ArrowBufferPool pool = new ArrowBufferPool(Settings.EMPTY)) {
+            assertTrue("Root allocator limit should be positive", pool.getRootAllocatorLimit() > 0);
+            assertEquals("Default child allocator should be 1 GB",
+                1L * 1024 * 1024 * 1024, pool.getMaxChildAllocation());
+        }
+    }
 }
