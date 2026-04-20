@@ -17,6 +17,7 @@ pub mod executor;
 pub mod ffm;
 pub mod io;
 pub mod local_executor;
+pub mod memory;
 pub mod partition_stream;
 pub mod query_executor;
 pub mod query_memory_pool_tracker;
