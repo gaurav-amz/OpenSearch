@@ -28,10 +28,7 @@ public class DataFusionPluginSettingsTests extends OpenSearchTestCase {
     }
 
     public void testMemoryPoolLimitHasNodeScope() {
-        assertTrue(
-            "datafusion.memory_pool_limit_bytes must have node scope",
-            DataFusionPlugin.DATAFUSION_MEMORY_POOL_LIMIT.hasNodeScope()
-        );
+        assertTrue("datafusion.memory_pool_limit_bytes must have node scope", DataFusionPlugin.DATAFUSION_MEMORY_POOL_LIMIT.hasNodeScope());
     }
 
     public void testPluginRegistersMemoryPoolLimitSetting() {
@@ -63,6 +60,25 @@ public class DataFusionPluginSettingsTests extends OpenSearchTestCase {
             throw new AssertionError(e);
         }
     }
+
+    // ---- New tests for percentage-based defaults ----
+
+    public void testMemoryPoolLimitDefaultIsPositive() {
+        long def = DataFusionPlugin.DATAFUSION_MEMORY_POOL_LIMIT.get(org.opensearch.common.settings.Settings.EMPTY);
+        assertTrue("Default memory pool should be positive (10% of native memory)", def > 0);
+    }
+
+    public void testSpillMemoryLimitDefaultIsPositive() {
+        long def = DataFusionPlugin.DATAFUSION_SPILL_MEMORY_LIMIT.get(org.opensearch.common.settings.Settings.EMPTY);
+        assertTrue("Default spill limit should be positive (20% of native memory)", def > 0);
+    }
+
+    public void testSpillMemoryLimitIsFinalForNow() {
+        // Option A: keep spill Final until DiskManager supports runtime resize.
+        // Flipping to Dynamic without wiring the Rust side is a UX footgun.
+        assertFalse(
+            "datafusion.spill_memory_limit_bytes should remain Final until DiskManager runtime resize lands",
+            DataFusionPlugin.DATAFUSION_SPILL_MEMORY_LIMIT.isDynamic()
+        );
+    }
 }
-
-

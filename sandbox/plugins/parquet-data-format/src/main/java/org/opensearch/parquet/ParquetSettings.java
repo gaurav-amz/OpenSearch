@@ -97,12 +97,25 @@ public final class ParquetSettings {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Maximum off-heap memory per VSR child allocator.
+     * Default: 1 GiB. Final (startup only) — matches the immutability of the Arrow root allocator;
+     * restart the node to change. Capped at {@code rootAllocatorLimit / 2} at construction time.
+     */
+    public static final Setting<ByteSizeValue> ARROW_CHILD_ALLOCATOR_BYTES = Setting.byteSizeSetting(
+        "parquet.write.arrow_child_allocator_bytes",
+        new ByteSizeValue(1, ByteSizeUnit.GB),
+        Setting.Property.NodeScope,
+        Setting.Property.Final
+    );
+
     /** Maximum rows per VectorSchemaRoot before rotation is triggered (default 50000). */
     public static final Setting<Integer> MAX_ROWS_PER_VSR = Setting.intSetting(
         "parquet.max_rows_per_vsr",
         DEFAULT_MAX_ROWS_PER_VSR,
         1,
-        Setting.Property.NodeScope
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
     );
 
     /** File size threshold for in-memory sort vs streaming merge sort (default 32MB). */
@@ -165,6 +178,7 @@ public final class ParquetSettings {
             BLOOM_FILTER_FPP,
             BLOOM_FILTER_NDV,
             MAX_NATIVE_ALLOCATION,
+            ARROW_CHILD_ALLOCATOR_BYTES,
             MAX_ROWS_PER_VSR,
             SORT_IN_MEMORY_THRESHOLD,
             SORT_BATCH_SIZE,

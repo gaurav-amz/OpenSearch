@@ -35,6 +35,7 @@ public class ArrowBufferPool implements Closeable {
     private static final Logger logger = LogManager.getLogger(ArrowBufferPool.class);
 
     private final RootAllocator rootAllocator;
+    private final long rootAllocatorLimit;
     private final long maxChildAllocation;
 
     /**
@@ -46,7 +47,32 @@ public class ArrowBufferPool implements Closeable {
         long maxAllocationInBytes = getMaxAllocationInBytes(settings);
         logger.debug("Max native memory allocation for ArrowBufferPool: {} bytes", maxAllocationInBytes);
         this.rootAllocator = new RootAllocator(maxAllocationInBytes);
-        this.maxChildAllocation = maxAllocationInBytes / 10;
+        this.rootAllocatorLimit = maxAllocationInBytes;
+
+        // Child allocator: read from setting, cap at root/2 so a single VSR cannot starve the pool.
+        long configuredChild = ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES.get(settings).getBytes();
+        long maxAllowedChild = maxAllocationInBytes / 2;
+        if (configuredChild > maxAllowedChild) {
+            throw new IllegalArgumentException(
+                "parquet.write.arrow_child_allocator_bytes ("
+                    + configuredChild
+                    + ") exceeds half of the root allocator limit ("
+                    + maxAllowedChild
+                    + "); reduce the child limit or raise parquet.max_native_allocation"
+            );
+        }
+        this.maxChildAllocation = configuredChild;
+        logger.debug("Arrow child allocator limit: {} bytes", this.maxChildAllocation);
+    }
+
+    /** Root allocator limit in bytes. Immutable after construction. */
+    public long getRootAllocatorLimit() {
+        return rootAllocatorLimit;
+    }
+
+    /** Child allocator limit in bytes. Final in the current implementation; restart to change. */
+    public long getMaxChildAllocation() {
+        return maxChildAllocation;
     }
 
     /**

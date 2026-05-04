@@ -21,6 +21,8 @@ import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.engine.dataformat.DataFormatRegistry;
 import org.opensearch.index.engine.dataformat.ReaderManagerConfig;
 import org.opensearch.index.engine.exec.EngineReaderManager;
+import org.opensearch.monitor.jvm.JvmInfo;
+import org.opensearch.monitor.os.OsProbe;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.SearchBackEndPlugin;
 import org.opensearch.repositories.RepositoriesService;
@@ -52,21 +54,28 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
     /**
      * Memory pool limit for the DataFusion runtime.
      * <p>
+     * Default: 10% of native memory (total physical − JVM max heap). Adapts to node size automatically.
      * Dynamic: changes take effect for new allocations only. Existing reservations
      * that exceed the new limit are not reclaimed — they drain naturally as queries complete.
      */
     public static final Setting<Long> DATAFUSION_MEMORY_POOL_LIMIT = Setting.longSetting(
         "datafusion.memory_pool_limit_bytes",
-        Runtime.getRuntime().maxMemory() / 4,
+        nativeMemoryFraction(0.10),
         0L,
         Setting.Property.NodeScope,
         Setting.Property.Dynamic
     );
 
-    /** Spill memory limit — when exceeded, DataFusion spills to disk. */
+    /**
+     * Spill disk space budget for the DataFusion runtime.
+     * <p>
+     * Default: 20% of native memory. Final (restart to change) until DataFusion's
+     * {@code DiskManager} supports runtime resize; see follow-up tracked in the
+     * configurable-memory-tuning branch README.
+     */
     public static final Setting<Long> DATAFUSION_SPILL_MEMORY_LIMIT = Setting.longSetting(
         "datafusion.spill_memory_limit_bytes",
-        Runtime.getRuntime().maxMemory() / 8,
+        nativeMemoryFraction(0.20),
         0L,
         Setting.Property.NodeScope
     );
@@ -135,6 +144,10 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
         dataFusionService.start();
         logger.debug("DataFusion plugin initialized — memory pool {}B, spill limit {}B", memoryPoolLimit, spillMemoryLimit);
 
+        // Startup guard-rail: warn if the DataFusion pool alone is over 80% of available native memory.
+        // A real envelope (summing Arrow + LiquidCache + Foyer) is out-of-scope for this branch.
+        warnIfNativeBudgetOverCommitted(memoryPoolLimit);
+
         this.substraitExtensions = loadSubstraitExtensions();
 
         // Wire the dynamic memory pool limit setting to the native runtime so updates via the
@@ -182,6 +195,40 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
     @Override
     public List<Setting<?>> getSettings() {
         return List.of(DATAFUSION_MEMORY_POOL_LIMIT, DATAFUSION_SPILL_MEMORY_LIMIT, DATAFUSION_REDUCE_INPUT_MODE);
+    }
+
+    /**
+     * Computes a byte budget as a fraction of available native memory (total physical − JVM max heap).
+     * Non-negative; returns 0 if the JVM heap is larger than physical memory (pathological).
+     * Evaluated at class-load time; settings tests that need deterministic defaults
+     * should supply explicit values via {@code Settings.builder()}.
+     */
+    private static long nativeMemoryFraction(double fraction) {
+        long total = OsProbe.getInstance().getTotalPhysicalMemorySize();
+        long heap = JvmInfo.jvmInfo().getConfiguredMaxHeapSize();
+        long available = Math.max(0, total - heap);
+        return (long) (available * fraction);
+    }
+
+    /** Warns if the memory pool alone exceeds 80% of available native memory. */
+    private static void warnIfNativeBudgetOverCommitted(long memoryPoolLimit) {
+        long total = OsProbe.getInstance().getTotalPhysicalMemorySize();
+        long heap = JvmInfo.jvmInfo().getConfiguredMaxHeapSize();
+        long available = Math.max(0, total - heap);
+        if (available == 0) {
+            return;
+        }
+        double fraction = (double) memoryPoolLimit / available;
+        if (fraction > 0.80) {
+            logger.warn(
+                "datafusion.memory_pool_limit_bytes={}B is {}% of available native memory ({}B). "
+                    + "Leave headroom for the Arrow writer pool, OS page cache, and future column caches "
+                    + "or the node may OOM under query + ingest pressure.",
+                memoryPoolLimit,
+                String.format(java.util.Locale.ROOT, "%.0f", fraction * 100),
+                available
+            );
+        }
     }
 
     /**
