@@ -99,14 +99,15 @@ public final class ParquetSettings {
 
     /**
      * Maximum off-heap memory per VSR child allocator.
-     * Default: 1 GiB. Final (startup only) — matches the immutability of the Arrow root allocator;
-     * restart the node to change. Capped at {@code rootAllocatorLimit / 2} at construction time.
+     * Dynamic: updates apply to new child allocators created after the update (at VSR rotation).
+     * Existing child allocators keep their construction-time limit until their VSR is closed.
+     * Capped at {@code rootAllocatorLimit / 2} so a single writer cannot starve the pool.
      */
     public static final Setting<ByteSizeValue> ARROW_CHILD_ALLOCATOR_BYTES = Setting.byteSizeSetting(
         "parquet.write.arrow_child_allocator_bytes",
         new ByteSizeValue(1, ByteSizeUnit.GB),
         Setting.Property.NodeScope,
-        Setting.Property.Final
+        Setting.Property.Dynamic
     );
 
     /** Maximum rows per VectorSchemaRoot before rotation is triggered (default 50000). */

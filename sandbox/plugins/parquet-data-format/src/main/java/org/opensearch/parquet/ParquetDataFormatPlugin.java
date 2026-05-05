@@ -28,6 +28,7 @@ import org.opensearch.index.store.PrecomputedChecksumStrategy;
 import org.opensearch.parquet.engine.ParquetDataFormat;
 import org.opensearch.parquet.engine.ParquetIndexingEngine;
 import org.opensearch.parquet.fields.ArrowSchemaBuilder;
+import org.opensearch.parquet.memory.ArrowBufferPool;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
@@ -41,6 +42,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -69,6 +73,14 @@ public class ParquetDataFormatPlugin extends Plugin implements DataFormatPlugin 
     private Settings settings = Settings.EMPTY;
     private ThreadPool threadPool;
 
+    /**
+     * Live set of per-shard ArrowBufferPool instances. Populated when ParquetIndexingEngine
+     * is constructed for a shard, drained when the engine is closed. Used to fan out
+     * dynamic updates of {@code parquet.write.arrow_child_allocator_bytes} to every active
+     * pool on the node.
+     */
+    private final Set<ArrowBufferPool> bufferPools = ConcurrentHashMap.newKeySet();
+
     /** Creates a new ParquetDataFormatPlugin. */
     public ParquetDataFormatPlugin() {}
 
@@ -88,7 +100,30 @@ public class ParquetDataFormatPlugin extends Plugin implements DataFormatPlugin 
     ) {
         this.settings = clusterService.getSettings();
         this.threadPool = threadPool;
+
+        // Wire dynamic updates of parquet.write.arrow_child_allocator_bytes to every active
+        // ArrowBufferPool. Each new child allocator (created per VSR rotation) reads the current
+        // volatile value; existing children keep their construction-time limit until VSR close.
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES, newValue -> {
+            long newBytes = newValue.getBytes();
+            for (ArrowBufferPool pool : bufferPools) {
+                pool.updateMaxChildAllocation(newBytes);
+            }
+        });
+
         return Collections.emptyList();
+    }
+
+    /**
+     * Registrar for {@link ArrowBufferPool#ArrowBufferPool(Settings, Function)}.
+     * Adds the pool to the plugin's live set and returns a deregistration callback
+     * the pool invokes on {@link ArrowBufferPool#close()}.
+     */
+    public Function<ArrowBufferPool, Runnable> bufferPoolRegistrar() {
+        return pool -> {
+            bufferPools.add(pool);
+            return () -> bufferPools.remove(pool);
+        };
     }
 
     @Override
@@ -105,7 +140,8 @@ public class ParquetDataFormatPlugin extends Plugin implements DataFormatPlugin 
             () -> ArrowSchemaBuilder.getSchema(engineConfig.mapperService()),
             engineConfig.indexSettings(),
             threadPool,
-            engineConfig.checksumStrategies().get(ParquetDataFormat.PARQUET_DATA_FORMAT_NAME)
+            engineConfig.checksumStrategies().get(ParquetDataFormat.PARQUET_DATA_FORMAT_NAME),
+            bufferPoolRegistrar()
         );
     }
 

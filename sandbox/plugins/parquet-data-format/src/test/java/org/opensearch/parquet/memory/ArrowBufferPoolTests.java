@@ -96,12 +96,58 @@ public class ArrowBufferPoolTests extends OpenSearchTestCase {
         assertTrue("Error should mention the over-commit", e.getMessage().contains("exceeds half of the root allocator limit"));
     }
 
-    public void testArrowChildAllocatorBytesIsFinal() {
-        assertFalse(
-            "parquet.write.arrow_child_allocator_bytes should be Final (restart to change)",
+    public void testArrowChildAllocatorBytesIsDynamic() {
+        assertTrue(
+            "parquet.write.arrow_child_allocator_bytes should be Dynamic so updates apply to new VSRs without restart",
             ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES.isDynamic()
         );
         assertTrue(ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES.hasNodeScope());
+    }
+
+    public void testUpdateMaxChildAllocationTakesEffect() {
+        Settings settings = Settings.builder()
+            .put("parquet.max_native_allocation", "50%")
+            .put(ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES.getKey(), new ByteSizeValue(256, ByteSizeUnit.MB))
+            .build();
+        try (ArrowBufferPool pool = new ArrowBufferPool(settings)) {
+            assertEquals(ByteSizeUnit.MB.toBytes(256), pool.getMaxChildAllocation());
+            pool.updateMaxChildAllocation(ByteSizeUnit.MB.toBytes(512));
+            assertEquals(
+                "updateMaxChildAllocation should publish the new value to the volatile field",
+                ByteSizeUnit.MB.toBytes(512),
+                pool.getMaxChildAllocation()
+            );
+        }
+    }
+
+    public void testUpdateMaxChildAllocationRejectsOverCommit() {
+        Settings settings = Settings.builder()
+            .put("parquet.max_native_allocation", "0.001%")
+            .put(ParquetSettings.ARROW_CHILD_ALLOCATOR_BYTES.getKey(), new ByteSizeValue(1, ByteSizeUnit.KB))
+            .build();
+        try (ArrowBufferPool pool = new ArrowBufferPool(settings)) {
+            IllegalArgumentException e = expectThrows(
+                IllegalArgumentException.class,
+                () -> pool.updateMaxChildAllocation(ByteSizeUnit.GB.toBytes(1))
+            );
+            assertTrue("Error message should mention the over-commit", e.getMessage().contains("exceeds half of the root allocator limit"));
+        }
+    }
+
+    public void testRegistrarIsCalledAndDeregisterOnClose() {
+        java.util.List<ArrowBufferPool> registered = new java.util.ArrayList<>();
+        java.util.List<ArrowBufferPool> deregistered = new java.util.ArrayList<>();
+        java.util.function.Function<ArrowBufferPool, Runnable> registrar = pool -> {
+            registered.add(pool);
+            return () -> deregistered.add(pool);
+        };
+        ArrowBufferPool pool = new ArrowBufferPool(Settings.EMPTY, registrar);
+        assertEquals(1, registered.size());
+        assertSame(pool, registered.get(0));
+        assertEquals(0, deregistered.size());
+        pool.close();
+        assertEquals("close() must invoke the deregister callback", 1, deregistered.size());
+        assertSame(pool, deregistered.get(0));
     }
 
     public void testMaxRowsPerVsrIsDynamic() {

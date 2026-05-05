@@ -23,6 +23,7 @@ import org.opensearch.index.engine.exec.commit.IndexStoreProvider;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.FormatChecksumStrategy;
 import org.opensearch.index.store.PrecomputedChecksumStrategy;
+import org.opensearch.parquet.ParquetDataFormatPlugin;
 import org.opensearch.parquet.ParquetSettings;
 import org.opensearch.parquet.bridge.NativeSettings;
 import org.opensearch.parquet.bridge.RustBridge;
@@ -42,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -96,7 +98,7 @@ public class ParquetIndexingEngine implements IndexingExecutionEngine<ParquetDat
         IndexSettings indexSettings,
         ThreadPool threadPool
     ) {
-        this(settings, dataFormat, shardPath, schemaSupplier, indexSettings, threadPool, new PrecomputedChecksumStrategy());
+        this(settings, dataFormat, shardPath, schemaSupplier, indexSettings, threadPool, new PrecomputedChecksumStrategy(), null);
     }
 
     /**
@@ -123,10 +125,40 @@ public class ParquetIndexingEngine implements IndexingExecutionEngine<ParquetDat
         ThreadPool threadPool,
         FormatChecksumStrategy checksumStrategy
     ) {
+        this(settings, dataFormat, shardPath, schemaSupplier, indexSettings, threadPool, checksumStrategy, null);
+    }
+
+    /**
+     * Creates a new ParquetIndexingEngine with an external checksum strategy and a
+     * buffer-pool registrar so the shared {@link ArrowBufferPool} can receive dynamic
+     * updates to {@code parquet.write.arrow_child_allocator_bytes}.
+     *
+     * <p>The registrar is produced by {@link ParquetDataFormatPlugin#bufferPoolRegistrar()}.
+     * When null, the pool is created without dynamic-settings wiring (useful for standalone tests).
+     *
+     * @param settings            the node-level settings
+     * @param dataFormat          the Parquet data format descriptor
+     * @param shardPath           the shard path for file storage
+     * @param schemaSupplier      supplier for the Arrow schema
+     * @param indexSettings       the index-level settings
+     * @param threadPool          the thread pool for background native writes
+     * @param checksumStrategy    the checksum strategy to use (shared with the directory)
+     * @param bufferPoolRegistrar plugin registrar for dynamic updates, or null for no wiring
+     */
+    public ParquetIndexingEngine(
+        Settings settings,
+        ParquetDataFormat dataFormat,
+        ShardPath shardPath,
+        Supplier<Schema> schemaSupplier,
+        IndexSettings indexSettings,
+        ThreadPool threadPool,
+        FormatChecksumStrategy checksumStrategy,
+        Function<ArrowBufferPool, Runnable> bufferPoolRegistrar
+    ) {
         this.dataFormat = dataFormat;
         this.shardPath = shardPath;
         this.schemaSupplier = schemaSupplier;
-        this.bufferPool = new ArrowBufferPool(settings);
+        this.bufferPool = new ArrowBufferPool(settings, bufferPoolRegistrar);
         this.indexSettings = indexSettings;
         this.nodeSettings = settings;
         this.threadPool = threadPool;

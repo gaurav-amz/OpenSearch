@@ -69,9 +69,15 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
     /**
      * Spill disk space budget for the DataFusion runtime.
      * <p>
-     * Default: 20% of native memory. Final (restart to change) until DataFusion's
-     * {@code DiskManager} supports runtime resize; see follow-up tracked in the
-     * configurable-memory-tuning branch README.
+     * Default: 20% of native memory. <strong>Final (restart to change).</strong>
+     * <p>
+     * DataFusion's {@code DiskManager.max_temp_directory_size} is a plain {@code u64},
+     * not an atomic. There is no upstream hook for lock-free runtime updates like the
+     * {@code DynamicLimitPool} we use for the memory pool. Making this setting Dynamic
+     * would require either (a) an upstream DataFusion patch to use {@code AtomicU64}, or
+     * (b) rebuilding the entire {@code RuntimeEnv} on each update and atomically swapping
+     * the Arc — both out of scope for this change. Tracked as follow-up; flip Dynamic
+     * once one of those lands.
      */
     public static final Setting<Long> DATAFUSION_SPILL_MEMORY_LIMIT = Setting.longSetting(
         "datafusion.spill_memory_limit_bytes",

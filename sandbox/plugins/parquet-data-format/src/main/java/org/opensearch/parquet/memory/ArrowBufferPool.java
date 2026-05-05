@@ -19,6 +19,7 @@ import org.opensearch.monitor.os.OsProbe;
 import org.opensearch.parquet.ParquetSettings;
 
 import java.io.Closeable;
+import java.util.function.Function;
 
 /**
  * Arrow memory allocator pool with configurable limits derived from node settings.
@@ -36,14 +37,32 @@ public class ArrowBufferPool implements Closeable {
 
     private final RootAllocator rootAllocator;
     private final long rootAllocatorLimit;
-    private final long maxChildAllocation;
+    /** Volatile so a settings-listener update on one thread is visible to createChildAllocator() on another. */
+    private volatile long maxChildAllocation;
+    /**
+     * Callback to deregister this pool from the plugin's registry when close() is called.
+     * Null when constructed without a registrar (unit tests that don't care about dynamism).
+     */
+    private final Runnable deregister;
 
     /**
-     * Creates a new ArrowBufferPool.
-     *
-     * @param settings node settings used to derive the maximum native allocation
+     * Creates a new ArrowBufferPool without plugin-managed dynamic-settings wiring.
+     * Used by tests; production code should use the two-arg constructor so the pool
+     * receives {@code parquet.write.arrow_child_allocator_bytes} updates.
      */
     public ArrowBufferPool(Settings settings) {
+        this(settings, null);
+    }
+
+    /**
+     * Creates a new ArrowBufferPool and registers it with the plugin's registry so the
+     * child-allocator limit can be updated at runtime via the cluster settings API.
+     *
+     * @param settings   node settings used to derive the root allocator limit + initial child limit
+     * @param registrar  registration function; when non-null, the pool is registered on construction
+     *                   and the returned {@link Runnable} is invoked on {@link #close()} to deregister
+     */
+    public ArrowBufferPool(Settings settings, Function<ArrowBufferPool, Runnable> registrar) {
         long maxAllocationInBytes = getMaxAllocationInBytes(settings);
         logger.debug("Max native memory allocation for ArrowBufferPool: {} bytes", maxAllocationInBytes);
         this.rootAllocator = new RootAllocator(maxAllocationInBytes);
@@ -63,6 +82,8 @@ public class ArrowBufferPool implements Closeable {
         }
         this.maxChildAllocation = configuredChild;
         logger.debug("Arrow child allocator limit: {} bytes", this.maxChildAllocation);
+
+        this.deregister = (registrar != null) ? registrar.apply(this) : () -> {};
     }
 
     /** Root allocator limit in bytes. Immutable after construction. */
@@ -70,9 +91,37 @@ public class ArrowBufferPool implements Closeable {
         return rootAllocatorLimit;
     }
 
-    /** Child allocator limit in bytes. Final in the current implementation; restart to change. */
+    /** Child allocator limit in bytes. Volatile — updated dynamically via cluster settings. */
     public long getMaxChildAllocation() {
         return maxChildAllocation;
+    }
+
+    /**
+     * Updates the per-VSR child allocator limit. New child allocators created after this call
+     * (i.e., after the next VSR rotation) will use the new limit; existing child allocators keep
+     * their construction-time limit until their VSR is closed.
+     *
+     * <p>Throws {@link IllegalArgumentException} if the requested limit exceeds half the root
+     * allocator size, so cluster-state updates that would starve other writers are rejected by
+     * the settings API rather than silently clamped.
+     *
+     * @param newBytes the new per-VSR child allocator limit in bytes
+     * @throws IllegalArgumentException if {@code newBytes > rootAllocatorLimit / 2}
+     */
+    public void updateMaxChildAllocation(long newBytes) {
+        long maxAllowed = rootAllocatorLimit / 2;
+        if (newBytes > maxAllowed) {
+            throw new IllegalArgumentException(
+                "parquet.write.arrow_child_allocator_bytes ("
+                    + newBytes
+                    + ") exceeds half of the root allocator limit ("
+                    + maxAllowed
+                    + "); reduce the child limit or raise parquet.max_native_allocation"
+            );
+        }
+        long old = this.maxChildAllocation;
+        this.maxChildAllocation = newBytes;
+        logger.info("Arrow child allocator limit updated: {} -> {} bytes", old, newBytes);
     }
 
     /**
@@ -91,7 +140,11 @@ public class ArrowBufferPool implements Closeable {
 
     @Override
     public void close() {
-        rootAllocator.close();
+        try {
+            deregister.run();
+        } finally {
+            rootAllocator.close();
+        }
     }
 
     private static long getMaxAllocationInBytes(Settings settings) {
