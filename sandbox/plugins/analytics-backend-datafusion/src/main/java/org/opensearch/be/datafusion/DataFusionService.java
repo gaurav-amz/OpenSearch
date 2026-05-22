@@ -14,14 +14,21 @@ import org.opensearch.be.datafusion.cache.CacheManager;
 import org.opensearch.be.datafusion.cache.CacheUtils;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 import org.opensearch.be.datafusion.stats.DataFusionStats;
+import org.opensearch.be.datafusion.stats.MemoryPoolStats;
+import org.opensearch.be.datafusion.stats.SpillStats;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.stream.Stream;
 
 /**
  * Node-level service managing the DataFusion native runtime lifecycle.
@@ -157,7 +164,25 @@ public class DataFusionService extends AbstractLifecycleComponent {
     }
 
     /**
-     * Returns the latest native executor stats, collected fresh from JNI on every call.
+     * Returns the configured spill directory path.
+     */
+    public String getSpillDirectory() {
+        return spillDirectory;
+    }
+
+    /**
+     * Returns the configured spill memory limit in bytes.
+     */
+    public long getSpillMemoryLimit() {
+        return spillMemoryLimit;
+    }
+
+    /**
+     * Returns the latest stats — native executor metrics from JNI plus pool and spill
+     * counters collected fresh on every call. The spill {@code used_bytes} is computed
+     * by walking the configured spill directory and summing regular file sizes; IO
+     * errors during the walk are swallowed so a transient permission blip cannot fail
+     * the stats request.
      *
      * @return the current {@link DataFusionStats}
      */
@@ -165,7 +190,34 @@ public class DataFusionService extends AbstractLifecycleComponent {
         if (runtimeHandle == null) {
             throw new IllegalStateException("DataFusionService has not been started");
         }
-        return NativeBridge.stats();
+        DataFusionStats nativeStats = NativeBridge.stats();
+        MemoryPoolStats memoryPool = new MemoryPoolStats(getMemoryPoolUsage(), getMemoryPoolLimit());
+        SpillStats spill = new SpillStats(spillDirectorySize(spillDirectory), spillMemoryLimit, spillDirectory);
+        return new DataFusionStats(nativeStats.getNativeExecutorsStats(), memoryPool, spill);
+    }
+
+    /**
+     * Walks {@code dir} and sums the size of every regular file. Returns 0 if the
+     * directory does not yet exist (created lazily by DataFusion's DiskManager) or
+     * if any IO error occurs — observability must not crash on a transient FS hiccup.
+     */
+    static long spillDirectorySize(String dir) {
+        if (dir == null) return 0L;
+        Path root = Paths.get(dir);
+        if (!Files.isDirectory(root)) return 0L;
+        LongAdder sum = new LongAdder();
+        try (Stream<Path> walk = Files.walk(root)) {
+            walk.filter(Files::isRegularFile).forEach(p -> {
+                try {
+                    sum.add(Files.size(p));
+                } catch (IOException e) {
+                    // swallow per-file errors; another sample will pick it up
+                }
+            });
+        } catch (IOException e) {
+            return 0L;
+        }
+        return sum.sum();
     }
     // Cache management (node-level, delegates to native runtime)
 

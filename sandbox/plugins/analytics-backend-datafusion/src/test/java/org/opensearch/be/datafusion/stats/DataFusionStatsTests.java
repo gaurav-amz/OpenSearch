@@ -201,6 +201,28 @@ public class DataFusionStatsTests extends OpenSearchTestCase {
         assertTrue(json.contains("\"plan_setup\""));
     }
 
+    // ---- Test: memory_pool + spill blocks render when supplied ----
+
+    public void testMemoryPoolAndSpillRendered() throws IOException {
+        DataFusionStats withSubrecords = new DataFusionStats(
+            sequentialStats().getNativeExecutorsStats(),
+            new MemoryPoolStats(1L << 30, 1L << 31),
+            new SpillStats(1L << 20, 1L << 33, "/data/spill")
+        );
+        String json = toJsonString(withSubrecords);
+        assertTrue("memory_pool block present", json.contains("\"memory_pool\""));
+        assertTrue("spill block present", json.contains("\"spill\""));
+        assertTrue("pool used", json.contains("\"used_bytes\":1073741824"));
+        assertTrue("spill dir", json.contains("\"directory\":\"/data/spill\""));
+    }
+
+    public void testMemoryPoolAndSpillOmittedWhenNull() throws IOException {
+        DataFusionStats nativeOnly = sequentialStats();
+        String json = toJsonString(nativeOnly);
+        assertFalse("memory_pool absent when null", json.contains("\"memory_pool\""));
+        assertFalse("spill absent when null", json.contains("\"spill\""));
+    }
+
     // ---- Test: exactly 4 task monitor keys ----
 
     public void testExactlyFourTaskMonitors() {
